@@ -58,7 +58,6 @@ function App() {
 
   // ---- Captura + deteção automática de ROI (Otsu + K-means + blob circular) ----
   const captureAndMeasure = (isBlank = false) => {
-    const video = webcamRef.current?.video;
     const imageSrc = sourceImg || (webcamRef.current && webcamRef.current.getScreenshot());
     if (!imageSrc) return;
 
