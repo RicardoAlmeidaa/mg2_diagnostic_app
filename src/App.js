@@ -1,6 +1,8 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import Webcam from "react-webcam";
 import './App.css';
+
+const HISTORY_KEY = 'mg2_diagnostic_history';
 
 function App() {
   const webcamRef = useRef(null);
@@ -15,7 +17,9 @@ function App() {
   const [sourceImg, setSourceImg] = useState(null);
   const [facingMode, setFacingMode] = useState("environment");
 
-  // ---- Design tokens (Figma) ----
+  const [view, setView] = useState('diagnostico'); // 'diagnostico' | 'historico'
+  const [history, setHistory] = useState([]);
+
   const colors = {
     bg: '#13181e',
     border: '#202a34',
@@ -31,6 +35,15 @@ function App() {
     metricBg: '#f8fafc',
     pillBg: '#f0fdfa',
   };
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(HISTORY_KEY);
+      if (saved) setHistory(JSON.parse(saved));
+    } catch (e) {
+      console.error('Erro ao carregar histórico:', e);
+    }
+  }, []);
 
   const rgbToLab = (r, g, b) => {
     let [nr, ng, nb] = [r / 255, g / 255, b / 255].map(v =>
@@ -95,7 +108,63 @@ function App() {
       )
     : null;
 
-  // ---- Small UI building blocks (estilo Figma) ----
+  const saveToHistory = () => {
+    if (!labValues || deltaE === null) return;
+
+    const now = new Date();
+    const entry = {
+      id: now.getTime(),
+      date: now.toLocaleDateString('pt-PT'),
+      time: now.toLocaleTimeString('pt-PT'),
+      L: labValues.L,
+      a: labValues.a,
+      b: labValues.b,
+      deltaE: deltaE,
+      concentration: null,
+    };
+
+    const updated = [entry, ...history];
+    setHistory(updated);
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Erro ao guardar histórico:', e);
+    }
+  };
+
+  const deleteHistoryEntry = (id) => {
+    const updated = history.filter(h => h.id !== id);
+    setHistory(updated);
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.error('Erro ao atualizar histórico:', e);
+    }
+  };
+
+  const clearHistory = () => {
+    setHistory([]);
+    try {
+      localStorage.removeItem(HISTORY_KEY);
+    } catch (e) {
+      console.error('Erro ao limpar histórico:', e);
+    }
+  };
+
+  const exportCSV = () => {
+    if (history.length === 0) return;
+    const header = 'Data,Hora,L,a,b,DeltaE,Concentracao_mM\n';
+    const rows = history.map(h =>
+      `${h.date},${h.time},${h.L.toFixed(2)},${h.a.toFixed(2)},${h.b.toFixed(2)},${h.deltaE.toFixed(2)},${h.concentration ?? ''}`
+    ).join('\n');
+    const blob = new Blob([header + rows], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `historico_mg2_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
 
   const RoundIconButton = ({ onClick, children, style }) => (
     <button
@@ -119,9 +188,10 @@ function App() {
     </button>
   );
 
-  const ActionButton = ({ onClick, children, primary }) => (
+  const ActionButton = ({ onClick, children, primary, disabled }) => (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
         background: primary ? colors.teal : colors.bg,
         border: primary ? 'none' : `1px solid ${colors.border}`,
@@ -132,7 +202,8 @@ function App() {
         color: colors.white,
         fontWeight: primary ? 700 : 600,
         fontSize: '13px',
-        cursor: 'pointer',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.4 : 1,
         flex: '1 1 auto',
       }}
     >
@@ -154,6 +225,36 @@ function App() {
     </div>
   );
 
+  const NavTabs = () => (
+    <div style={{
+      display: 'flex', gap: '4px', background: colors.bg,
+      border: `1px solid ${colors.border}`, borderRadius: '10px', padding: '4px', marginBottom: '4px',
+    }}>
+      {[
+        { key: 'diagnostico', label: 'Diagnóstico' },
+        { key: 'historico', label: `Histórico (${history.length})` },
+      ].map(tab => (
+        <button
+          key={tab.key}
+          onClick={() => setView(tab.key)}
+          style={{
+            flex: 1,
+            background: view === tab.key ? colors.teal : 'transparent',
+            color: colors.white,
+            border: 'none',
+            borderRadius: '7px',
+            padding: '8px 0',
+            fontSize: '13px',
+            fontWeight: 700,
+            cursor: 'pointer',
+          }}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div style={{
       background: colors.bg,
@@ -164,177 +265,231 @@ function App() {
       fontFamily: "'Geist', system-ui, sans-serif",
       color: colors.white,
     }}>
-      {/* Top app bar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 24px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 24px 8px' }}>
         <p style={{ margin: 0, fontWeight: 700, fontSize: '18px', color: colors.teal }}>
           Mg²⁺ Diagnostic Platform
         </p>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '0 24px 24px' }}>
+      <div style={{ padding: '0 24px' }}>
+        <NavTabs />
+      </div>
 
-        {/* Camera viewport */}
-        <div style={{ position: 'relative', width: '100%', height: '204px', borderRadius: '20px', overflow: 'hidden', background: '#000' }}>
-          {sourceImg ? (
-            <img src={sourceImg} alt="Source" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          ) : (
-            <Webcam
-              audio={false}
-              ref={webcamRef}
-              screenshotFormat="image/jpeg"
-              videoConstraints={{ facingMode }}
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-          )}
+      {view === 'diagnostico' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '8px 24px 24px' }}>
 
-          {/* ROI target frame */}
-          <div style={{
-            position: 'absolute',
-            top: `${roiPos.y}px`,
-            left: `${roiPos.x}px`,
-            width: `${roiSize}px`,
-            height: `${roiSize}px`,
-            border: `2px solid ${colors.tealBright}`,
-            borderRadius: '4px',
-            pointerEvents: 'none',
-            boxShadow: '0 0 12px rgba(0,245,212,0.3)',
-          }} />
+          <div style={{ position: 'relative', width: '100%', height: '204px', borderRadius: '20px', overflow: 'hidden', background: '#000' }}>
+            {sourceImg ? (
+              <img src={sourceImg} alt="Source" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <Webcam
+                audio={false}
+                ref={webcamRef}
+                screenshotFormat="image/jpeg"
+                videoConstraints={{ facingMode }}
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            )}
 
-          {/* Feed scrim - live indicator */}
-          <div style={{
-            position: 'absolute', top: 0, left: 0, right: 0,
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            padding: '8px 12px',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: colors.tealBright }} />
-              <span style={{ fontSize: '11px', fontWeight: 600, color: colors.tealBright, fontFamily: 'monospace' }}>
-                {sourceImg ? 'FROZEN FRAME' : 'LIVE SCAN'}
-              </span>
-            </div>
-          </div>
-        </div>
+            <div style={{
+              position: 'absolute',
+              top: `${roiPos.y}px`,
+              left: `${roiPos.x}px`,
+              width: `${roiSize}px`,
+              height: `${roiSize}px`,
+              border: `2px solid ${colors.tealBright}`,
+              borderRadius: '4px',
+              pointerEvents: 'none',
+              boxShadow: '0 0 12px rgba(0,245,212,0.3)',
+            }} />
 
-        {/* ROI controls */}
-        <div>
-          <p style={{ margin: '0 0 6px', fontSize: '13px', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase' }}>
-            ROI Controls
-          </p>
-          <div style={{
-            background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: '8px',
-            height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px',
-          }}>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x - 5 }))}>←</RoundIconButton>
-              <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y - 5 }))}>↑</RoundIconButton>
-              <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y + 5 }))}>↓</RoundIconButton>
-              <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x + 5 }))}>→</RoundIconButton>
-            </div>
-            <div style={{ width: '1px', height: '24px', background: colors.border }} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <RoundIconButton onClick={() => setRoiSize(s => s - 5)}>−</RoundIconButton>
-              <span style={{ fontSize: '13px', color: colors.textMuted, fontFamily: 'monospace' }}>SCALE</span>
-              <RoundIconButton onClick={() => setRoiSize(s => s + 5)}>+</RoundIconButton>
-            </div>
-          </div>
-        </div>
-
-        {/* Action row */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' }}>
-          <ActionButton onClick={() => captureAndMeasure(true)}>Set Blank</ActionButton>
-          <ActionButton onClick={() => captureAndMeasure(false)} primary>Measure</ActionButton>
-          <ActionButton onClick={() => setSourceImg(null)}>Camera</ActionButton>
-          <ActionButton onClick={() => fileInputRef.current.click()}>Gallery</ActionButton>
-          <ActionButton onClick={capturePhoto}>Capture Photo</ActionButton>
-          <ActionButton onClick={toggleCamera}>
-            Trocar ({facingMode === 'user' ? 'Frontal' : 'Traseira'})
-          </ActionButton>
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={(e) => {
-              const file = e.target.files[0];
-              if (file) {
-                const r = new FileReader();
-                r.onload = (ev) => setSourceImg(ev.target.result);
-                r.readAsDataURL(file);
-              }
-            }}
-            accept="image/*"
-            style={{ display: 'none' }}
-          />
-        </div>
-
-        {/* Results card */}
-        {(labValues || blankLab) && (
-          <div style={{
-            background: colors.cardBg,
-            border: `1px solid ${colors.cardBorder}`,
-            borderRadius: '20px',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '10px',
-          }}>
-            {blankLab && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '11px', color: colors.cardTextMuted, fontWeight: 600 }}>REFERENCE (BLANK):</span>
-                <span style={{ fontSize: '12px', color: colors.cardTextDark, fontFamily: 'monospace' }}>
-                  L*: {blankLab.L.toFixed(2)} | a*: {blankLab.a.toFixed(2)} | b*: {blankLab.b.toFixed(2)}
+            <div style={{
+              position: 'absolute', top: 0, left: 0, right: 0,
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '8px 12px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: colors.tealBright }} />
+                <span style={{ fontSize: '11px', fontWeight: 600, color: colors.tealBright, fontFamily: 'monospace' }}>
+                  {sourceImg ? 'FROZEN FRAME' : 'LIVE SCAN'}
                 </span>
               </div>
-            )}
-
-            {labValues && (
-              <>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    {roiImg && <img src={roiImg} alt="ROI" style={{ width: '32px', borderRadius: '4px', border: `1px solid ${colors.teal}` }} />}
-                    <p style={{ margin: 0, fontWeight: 700, fontSize: '14px', color: colors.cardTextDark }}>
-                      Colorimetric Analysis
-                    </p>
-                  </div>
-                  {deltaE !== null && (
-                    <div style={{
-                      background: colors.pillBg, borderRadius: '100px', padding: '6px 12px',
-                      display: 'flex', alignItems: 'center', gap: '4px',
-                    }}>
-                      <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: colors.teal }} />
-                      <span style={{ fontSize: '12px', fontWeight: 700, color: colors.teal, fontFamily: 'monospace' }}>
-                        ΔE {deltaE.toFixed(2)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <MetricCard label="L* (Luminance)" value={labValues.L.toFixed(1)} />
-                  <MetricCard label={labValues.a >= 0 ? 'a* (Redness)' : 'a* (Greenness)'} value={labValues.a.toFixed(1)} />
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
-                  <MetricCard label={labValues.b >= 0 ? 'b* (Yellowness)' : 'b* (Blueness)'} value={labValues.b.toFixed(1)} />
-                  {deltaE !== null && <MetricCard label="ΔEab (Total Delta)" value={deltaE.toFixed(2)} />}
-                </div>
-              </>
-            )}
+            </div>
           </div>
-        )}
 
-        {/* Legenda dos eixos - mantida do original */}
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', color: colors.textMuted }}>
-          <thead>
-            <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
-              <th align="left" style={{ padding: '4px 0' }}>Eixo</th>
-              <th align="left" style={{ padding: '4px 0' }}>Significado Colorimétrico</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td><strong>L*</strong></td><td>Luminosidade (0: Preto ↔ 100: Branco)</td></tr>
-            <tr><td><strong>a*</strong></td><td>Verde (-) ↔ Vermelho (+)</td></tr>
-            <tr><td><strong>b*</strong></td><td>Azul (-) ↔ Amarelo (+)</td></tr>
-          </tbody>
-        </table>
-      </div>
+          <div>
+            <p style={{ margin: '0 0 6px', fontSize: '13px', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase' }}>
+              ROI Controls
+            </p>
+            <div style={{
+              background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: '8px',
+              height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px',
+            }}>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x - 5 }))}>←</RoundIconButton>
+                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y - 5 }))}>↑</RoundIconButton>
+                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y + 5 }))}>↓</RoundIconButton>
+                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x + 5 }))}>→</RoundIconButton>
+              </div>
+              <div style={{ width: '1px', height: '24px', background: colors.border }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <RoundIconButton onClick={() => setRoiSize(s => s - 5)}>−</RoundIconButton>
+                <span style={{ fontSize: '13px', color: colors.textMuted, fontFamily: 'monospace' }}>SCALE</span>
+                <RoundIconButton onClick={() => setRoiSize(s => s + 5)}>+</RoundIconButton>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' }}>
+            <ActionButton onClick={() => captureAndMeasure(true)}>Set Blank</ActionButton>
+            <ActionButton onClick={() => captureAndMeasure(false)} primary>Measure</ActionButton>
+            <ActionButton onClick={() => setSourceImg(null)}>Camera</ActionButton>
+            <ActionButton onClick={() => fileInputRef.current.click()}>Gallery</ActionButton>
+            <ActionButton onClick={capturePhoto}>Capture Photo</ActionButton>
+            <ActionButton onClick={toggleCamera}>
+              Trocar ({facingMode === 'user' ? 'Frontal' : 'Traseira'})
+            </ActionButton>
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={(e) => {
+                const file = e.target.files[0];
+                if (file) {
+                  const r = new FileReader();
+                  r.onload = (ev) => setSourceImg(ev.target.result);
+                  r.readAsDataURL(file);
+                }
+              }}
+              accept="image/*"
+              style={{ display: 'none' }}
+            />
+          </div>
+
+          {(labValues || blankLab) && (
+            <div style={{
+              background: colors.cardBg,
+              border: `1px solid ${colors.cardBorder}`,
+              borderRadius: '20px',
+              padding: '16px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+            }}>
+              {blankLab && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '11px', color: colors.cardTextMuted, fontWeight: 600 }}>REFERENCE (BLANK):</span>
+                  <span style={{ fontSize: '12px', color: colors.cardTextDark, fontFamily: 'monospace' }}>
+                    L*: {blankLab.L.toFixed(2)} | a*: {blankLab.a.toFixed(2)} | b*: {blankLab.b.toFixed(2)}
+                  </span>
+                </div>
+              )}
+
+              {labValues && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      {roiImg && <img src={roiImg} alt="ROI" style={{ width: '32px', borderRadius: '4px', border: `1px solid ${colors.teal}` }} />}
+                      <p style={{ margin: 0, fontWeight: 700, fontSize: '14px', color: colors.cardTextDark }}>
+                        Colorimetric Analysis
+                      </p>
+                    </div>
+                    {deltaE !== null && (
+                      <div style={{
+                        background: colors.pillBg, borderRadius: '100px', padding: '6px 12px',
+                        display: 'flex', alignItems: 'center', gap: '4px',
+                      }}>
+                        <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: colors.teal }} />
+                        <span style={{ fontSize: '12px', fontWeight: 700, color: colors.teal, fontFamily: 'monospace' }}>
+                          ΔE {deltaE.toFixed(2)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <MetricCard label="L* (Luminance)" value={labValues.L.toFixed(1)} />
+                    <MetricCard label={labValues.a >= 0 ? 'a* (Redness)' : 'a* (Greenness)'} value={labValues.a.toFixed(1)} />
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <MetricCard label={labValues.b >= 0 ? 'b* (Yellowness)' : 'b* (Blueness)'} value={labValues.b.toFixed(1)} />
+                    {deltaE !== null && <MetricCard label="ΔEab (Total Delta)" value={deltaE.toFixed(2)} />}
+                  </div>
+
+                  <ActionButton onClick={saveToHistory} primary disabled={deltaE === null}>
+                    💾 Guardar no Histórico
+                  </ActionButton>
+                </>
+              )}
+            </div>
+          )}
+
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', color: colors.textMuted }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${colors.border}` }}>
+                <th align="left" style={{ padding: '4px 0' }}>Eixo</th>
+                <th align="left" style={{ padding: '4px 0' }}>Significado Colorimétrico</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><strong>L*</strong></td><td>Luminosidade (0: Preto ↔ 100: Branco)</td></tr>
+              <tr><td><strong>a*</strong></td><td>Verde (-) ↔ Vermelho (+)</td></tr>
+              <tr><td><strong>b*</strong></td><td>Azul (-) ↔ Amarelo (+)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {view === 'historico' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '8px 24px 24px' }}>
+
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+            <ActionButton onClick={exportCSV} disabled={history.length === 0}>Exportar CSV</ActionButton>
+            <ActionButton onClick={clearHistory} disabled={history.length === 0}>Limpar Tudo</ActionButton>
+          </div>
+
+          {history.length === 0 ? (
+            <div style={{
+              border: `1px dashed ${colors.border}`, borderRadius: '16px', padding: '32px 16px',
+              textAlign: 'center', color: colors.textMuted, fontSize: '13px',
+            }}>
+              Ainda não há medições guardadas.<br />
+              Faz uma medição no Diagnóstico e clica em "Guardar no Histórico".
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {history.map(entry => (
+                <div key={entry.id} style={{
+                  background: colors.cardBg, border: `1px solid ${colors.cardBorder}`,
+                  borderRadius: '14px', padding: '12px 14px',
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                      <p style={{ margin: 0, fontSize: '12px', color: colors.cardTextMuted, fontWeight: 600 }}>
+                        {entry.date} · {entry.time}
+                      </p>
+                      <p style={{ margin: '2px 0 0', fontSize: '16px', color: colors.cardTextDark, fontWeight: 700 }}>
+                        {entry.concentration !== null ? `${entry.concentration} mM` : 'Concentração: —'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => deleteHistoryEntry(entry.id)}
+                      style={{ background: 'none', border: 'none', color: colors.pink, fontSize: '12px', cursor: 'pointer', fontWeight: 700 }}
+                    >
+                      Apagar
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px', marginTop: '8px' }}>
+                    <MetricCard label="L*" value={entry.L.toFixed(1)} />
+                    <MetricCard label="a*" value={entry.a.toFixed(1)} />
+                    <MetricCard label="b*" value={entry.b.toFixed(1)} />
+                    <MetricCard label="ΔEab" value={entry.deltaE.toFixed(2)} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <canvas ref={canvasRef} style={{ display: 'none' }} />
     </div>
