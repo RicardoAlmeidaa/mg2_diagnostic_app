@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import Webcam from "react-webcam";
+import { autoDetectROI, rgbToLab } from './autoROI';
 import './App.css';
 
 const HISTORY_KEY = 'mg2_diagnostic_history';
@@ -16,6 +17,7 @@ function App() {
   const [blankLab, setBlankLab] = useState(null);
   const [sourceImg, setSourceImg] = useState(null);
   const [facingMode, setFacingMode] = useState("environment");
+  const [autoDetectMsg, setAutoDetectMsg] = useState(null);
 
   const [view, setView] = useState('diagnostico'); // 'diagnostico' | 'historico'
   const [history, setHistory] = useState([]);
@@ -45,21 +47,6 @@ function App() {
     }
   }, []);
 
-  const rgbToLab = (r, g, b) => {
-    let [nr, ng, nb] = [r / 255, g / 255, b / 255].map(v =>
-      v > 0.04045 ? Math.pow((v + 0.055) / 1.055, 2.4) : v / 12.92
-    );
-    let x = (nr * 0.4124 + ng * 0.3576 + nb * 0.1805) * 100;
-    let y = (nr * 0.2126 + ng * 0.7152 + nb * 0.0722) * 100;
-    let z = (nr * 0.0193 + ng * 0.1192 + nb * 0.9505) * 100;
-    const f = (t) => t > 0.008856 ? Math.pow(t, 1 / 3) : (7.787 * t) + (16 / 116);
-    return {
-      L: parseFloat((116 * f(y / 100)) - 16),
-      a: parseFloat(500 * (f(x / 95.047) - f(y / 100))),
-      b: parseFloat(200 * (f(y / 100) - f(z / 108.883)))
-    };
-  };
-
   const toggleCamera = () => {
     setFacingMode(prev => (prev === "user" ? "environment" : "user"));
   };
@@ -69,6 +56,7 @@ function App() {
     if (screenshot) setSourceImg(screenshot);
   };
 
+  // ---- Captura + deteção automática de ROI (Otsu + K-means + blob circular) ----
   const captureAndMeasure = (isBlank = false) => {
     const video = webcamRef.current?.video;
     const imageSrc = sourceImg || (webcamRef.current && webcamRef.current.getScreenshot());
@@ -79,19 +67,53 @@ function App() {
     image.onload = () => {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      let sX = image.width / (sourceImg ? image.width : video.clientWidth);
-      let sY = image.height / (sourceImg ? image.height : video.clientHeight);
 
-      const actualSize = roiSize * sX;
-      canvas.width = actualSize; canvas.height = actualSize;
-      ctx.drawImage(image, roiPos.x * sX, roiPos.y * sY, actualSize, actualSize, 0, 0, actualSize, actualSize);
+      // 1) Desenha a imagem reduzida, só para a deteção (mais rápido)
+      const detectWidth = 240;
+      const detectHeight = Math.round(image.height * (detectWidth / image.width));
+      canvas.width = detectWidth;
+      canvas.height = detectHeight;
+      ctx.drawImage(image, 0, 0, detectWidth, detectHeight);
 
-      const imageData = ctx.getImageData(0, 0, actualSize, actualSize).data;
-      let r = 0, g = 0, b = 0;
-      for (let i = 0; i < imageData.length; i += 4) {
-        r += imageData[i]; g += imageData[i + 1]; b += imageData[i + 2];
+      const circle = autoDetectROI(ctx, detectWidth, detectHeight);
+
+      if (!circle) {
+        setAutoDetectMsg('Não foi possível detetar o chip automaticamente. Ajusta o ROI manualmente com as setas e tenta de novo com "Measure"/"Set Blank".');
+        return;
       }
-      const count = imageData.length / 4;
+      setAutoDetectMsg(null);
+
+      // 2) Escala as coordenadas do círculo detetado de volta para a resolução real
+      const scale = image.width / detectWidth;
+      const realX = circle.centerX * scale;
+      const realY = circle.centerY * scale;
+      const realRadius = circle.radius * scale;
+
+      // Atualiza o retângulo visual do ROI, para dar feedback ao utilizador
+      setRoiPos({ x: realX - realRadius, y: realY - realRadius });
+      setRoiSize(realRadius * 2);
+
+      // 3) Recorta o círculo detetado em resolução real e calcula a cor média SÓ dentro do círculo
+      const diameter = realRadius * 2;
+      canvas.width = diameter;
+      canvas.height = diameter;
+      ctx.drawImage(image, realX - realRadius, realY - realRadius, diameter, diameter, 0, 0, diameter, diameter);
+
+      const imageData = ctx.getImageData(0, 0, diameter, diameter).data;
+      let r = 0, g = 0, b = 0, count = 0;
+      const cx = realRadius, cy = realRadius;
+
+      for (let py = 0; py < diameter; py++) {
+        for (let px = 0; px < diameter; px++) {
+          if ((px - cx) ** 2 + (py - cy) ** 2 <= realRadius * realRadius) {
+            const i = (py * diameter + px) * 4;
+            r += imageData[i]; g += imageData[i + 1]; b += imageData[i + 2];
+            count++;
+          }
+        }
+      }
+
+      if (count === 0) return;
       const lab = rgbToLab(r / count, g / count, b / count);
 
       if (isBlank) setBlankLab(lab);
@@ -298,7 +320,7 @@ function App() {
               width: `${roiSize}px`,
               height: `${roiSize}px`,
               border: `2px solid ${colors.tealBright}`,
-              borderRadius: '4px',
+              borderRadius: '50%',
               pointerEvents: 'none',
               boxShadow: '0 0 12px rgba(0,245,212,0.3)',
             }} />
@@ -317,9 +339,18 @@ function App() {
             </div>
           </div>
 
+          {autoDetectMsg && (
+            <div style={{
+              background: 'rgba(224,90,143,0.12)', border: `1px solid ${colors.pink}`,
+              borderRadius: '10px', padding: '10px 12px', fontSize: '12px', color: colors.pink,
+            }}>
+              {autoDetectMsg}
+            </div>
+          )}
+
           <div>
             <p style={{ margin: '0 0 6px', fontSize: '13px', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase' }}>
-              ROI Controls
+              ROI Controls (ajuste manual / fallback)
             </p>
             <div style={{
               background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: '8px',
@@ -388,7 +419,7 @@ function App() {
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      {roiImg && <img src={roiImg} alt="ROI" style={{ width: '32px', borderRadius: '4px', border: `1px solid ${colors.teal}` }} />}
+                      {roiImg && <img src={roiImg} alt="ROI" style={{ width: '32px', borderRadius: '50%', border: `1px solid ${colors.teal}` }} />}
                       <p style={{ margin: 0, fontWeight: 700, fontSize: '14px', color: colors.cardTextDark }}>
                         Colorimetric Analysis
                       </p>
