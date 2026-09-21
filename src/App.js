@@ -18,6 +18,7 @@ function App() {
   const [sourceImg, setSourceImg] = useState(null);
   const [facingMode, setFacingMode] = useState("environment");
   const [autoDetectMsg, setAutoDetectMsg] = useState(null);
+  const [showManualControls, setShowManualControls] = useState(false);
 
   const [view, setView] = useState('diagnostico'); // 'diagnostico' | 'historico'
   const [history, setHistory] = useState([]);
@@ -56,8 +57,37 @@ function App() {
     if (screenshot) setSourceImg(screenshot);
   };
 
-  // ---- Captura + deteção automática de ROI (Otsu + K-means + blob circular) ----
-  const captureAndMeasure = (isBlank = false) => {
+  // Extrai a cor média dentro de um círculo (centro cx,cy raio r) numa imagem já carregada
+  const extractCircleLab = (image, cx, cy, radius) => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const diameter = radius * 2;
+
+    canvas.width = diameter;
+    canvas.height = diameter;
+    ctx.drawImage(image, cx - radius, cy - radius, diameter, diameter, 0, 0, diameter, diameter);
+
+    const imageData = ctx.getImageData(0, 0, diameter, diameter).data;
+    let r = 0, g = 0, b = 0, count = 0;
+    const rcx = radius, rcy = radius;
+
+    for (let py = 0; py < diameter; py++) {
+      for (let px = 0; px < diameter; px++) {
+        if ((px - rcx) ** 2 + (py - rcy) ** 2 <= radius * radius) {
+          const i = (py * diameter + px) * 4;
+          r += imageData[i]; g += imageData[i + 1]; b += imageData[i + 2];
+          count++;
+        }
+      }
+    }
+    if (count === 0) return null;
+
+    const lab = rgbToLab(r / count, g / count, b / count);
+    return { lab, dataUrl: canvas.toDataURL('image/jpeg') };
+  };
+
+  // ---- AUTO: só tenta deteção automática (Otsu + K-means + blob circular) ----
+  const autoCapture = (isBlank = false) => {
     const imageSrc = sourceImg || (webcamRef.current && webcamRef.current.getScreenshot());
     if (!imageSrc) return;
 
@@ -67,7 +97,6 @@ function App() {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-      // 1) Desenha a imagem reduzida, só para a deteção (mais rápido)
       const detectWidth = 240;
       const detectHeight = Math.round(image.height * (detectWidth / image.width));
       canvas.width = detectWidth;
@@ -77,47 +106,51 @@ function App() {
       const circle = autoDetectROI(ctx, detectWidth, detectHeight);
 
       if (!circle) {
-        setAutoDetectMsg('Não foi possível detetar o chip automaticamente. Ajusta o ROI manualmente com as setas e tenta de novo com "Measure"/"Set Blank".');
+        setAutoDetectMsg('Não foi possível detetar o chip automaticamente. Usa os controlos manuais abaixo.');
+        setShowManualControls(true);
         return;
       }
-      setAutoDetectMsg(null);
 
-      // 2) Escala as coordenadas do círculo detetado de volta para a resolução real
+      setAutoDetectMsg(null);
       const scale = image.width / detectWidth;
       const realX = circle.centerX * scale;
       const realY = circle.centerY * scale;
       const realRadius = circle.radius * scale;
 
-      // Atualiza o retângulo visual do ROI, para dar feedback ao utilizador
       setRoiPos({ x: realX - realRadius, y: realY - realRadius });
       setRoiSize(realRadius * 2);
 
-      // 3) Recorta o círculo detetado em resolução real e calcula a cor média SÓ dentro do círculo
-      const diameter = realRadius * 2;
-      canvas.width = diameter;
-      canvas.height = diameter;
-      ctx.drawImage(image, realX - realRadius, realY - realRadius, diameter, diameter, 0, 0, diameter, diameter);
+      const result = extractCircleLab(image, realX, realY, realRadius);
+      if (!result) return;
 
-      const imageData = ctx.getImageData(0, 0, diameter, diameter).data;
-      let r = 0, g = 0, b = 0, count = 0;
-      const cx = realRadius, cy = realRadius;
+      if (isBlank) setBlankLab(result.lab);
+      else setLabValues(result.lab);
+      setRoiImg(result.dataUrl);
+    };
+  };
 
-      for (let py = 0; py < diameter; py++) {
-        for (let px = 0; px < diameter; px++) {
-          if ((px - cx) ** 2 + (py - cy) ** 2 <= realRadius * realRadius) {
-            const i = (py * diameter + px) * 4;
-            r += imageData[i]; g += imageData[i + 1]; b += imageData[i + 2];
-            count++;
-          }
-        }
-      }
+  // ---- MANUAL: usa sempre o roiPos/roiSize atual (círculo posicionado à mão) ----
+  const manualCapture = (isBlank = false) => {
+    const imageSrc = sourceImg || (webcamRef.current && webcamRef.current.getScreenshot());
+    if (!imageSrc) return;
 
-      if (count === 0) return;
-      const lab = rgbToLab(r / count, g / count, b / count);
+    const image = new Image();
+    image.src = imageSrc;
+    image.onload = () => {
+      const video = webcamRef.current?.video;
+      const sX = image.width / (sourceImg ? image.width : (video?.clientWidth || image.width));
+      const sY = image.height / (sourceImg ? image.height : (video?.clientHeight || image.height));
 
-      if (isBlank) setBlankLab(lab);
-      else setLabValues(lab);
-      setRoiImg(canvas.toDataURL('image/jpeg'));
+      const realX = (roiPos.x + roiSize / 2) * sX;
+      const realY = (roiPos.y + roiSize / 2) * sY;
+      const realRadius = (roiSize / 2) * sX;
+
+      const result = extractCircleLab(image, realX, realY, realRadius);
+      if (!result) return;
+
+      if (isBlank) setBlankLab(result.lab);
+      else setLabValues(result.lab);
+      setRoiImg(result.dataUrl);
     };
   };
 
@@ -347,32 +380,44 @@ function App() {
             </div>
           )}
 
-          <div>
-            <p style={{ margin: '0 0 6px', fontSize: '13px', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase' }}>
-              ROI Controls (ajuste manual / fallback)
-            </p>
-            <div style={{
-              background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: '8px',
-              height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px',
-            }}>
-              <div style={{ display: 'flex', gap: '6px' }}>
-                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x - 5 }))}>←</RoundIconButton>
-                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y - 5 }))}>↑</RoundIconButton>
-                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y + 5 }))}>↓</RoundIconButton>
-                <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x + 5 }))}>→</RoundIconButton>
-              </div>
-              <div style={{ width: '1px', height: '24px', background: colors.border }} />
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <RoundIconButton onClick={() => setRoiSize(s => s - 5)}>−</RoundIconButton>
-                <span style={{ fontSize: '13px', color: colors.textMuted, fontFamily: 'monospace' }}>SCALE</span>
-                <RoundIconButton onClick={() => setRoiSize(s => s + 5)}>+</RoundIconButton>
-              </div>
-            </div>
+          {/* Botões automáticos — sempre visíveis */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' }}>
+            <ActionButton onClick={() => autoCapture(true)}>Auto Set Blank</ActionButton>
+            <ActionButton onClick={() => autoCapture(false)} primary>Auto Measure</ActionButton>
           </div>
 
+          {/* Controlos manuais — só aparecem depois de uma falha na deteção automática */}
+          {showManualControls && (
+            <div>
+              <p style={{ margin: '0 0 6px', fontSize: '13px', fontWeight: 700, color: colors.textMuted, textTransform: 'uppercase' }}>
+                Controlos Manuais
+              </p>
+              <div style={{
+                background: colors.bg, border: `1px solid ${colors.border}`, borderRadius: '8px',
+                height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px',
+              }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x - 5 }))}>←</RoundIconButton>
+                  <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y - 5 }))}>↑</RoundIconButton>
+                  <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, y: p.y + 5 }))}>↓</RoundIconButton>
+                  <RoundIconButton onClick={() => setRoiPos(p => ({ ...p, x: p.x + 5 }))}>→</RoundIconButton>
+                </div>
+                <div style={{ width: '1px', height: '24px', background: colors.border }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <RoundIconButton onClick={() => setRoiSize(s => s - 5)}>−</RoundIconButton>
+                  <span style={{ fontSize: '13px', color: colors.textMuted, fontFamily: 'monospace' }}>SCALE</span>
+                  <RoundIconButton onClick={() => setRoiSize(s => s + 5)}>+</RoundIconButton>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center', marginTop: '8px' }}>
+                <ActionButton onClick={() => manualCapture(true)}>Manual Set Blank</ActionButton>
+                <ActionButton onClick={() => manualCapture(false)} primary>Manual Measure</ActionButton>
+              </div>
+            </div>
+          )}
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' }}>
-            <ActionButton onClick={() => captureAndMeasure(true)}>Set Blank</ActionButton>
-            <ActionButton onClick={() => captureAndMeasure(false)} primary>Measure</ActionButton>
             <ActionButton onClick={() => setSourceImg(null)}>Camera</ActionButton>
             <ActionButton onClick={() => fileInputRef.current.click()}>Gallery</ActionButton>
             <ActionButton onClick={capturePhoto}>Capture Photo</ActionButton>
