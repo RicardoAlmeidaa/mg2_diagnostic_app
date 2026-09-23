@@ -1,6 +1,6 @@
 {
-  "short_name": "Mg2+ Sensor",
-  "name": "Mg2+ Diagnostic Application",
+  "short_name": "MagCare",
+  "name": "MagCare - Mg2+ Diagnostic Application",
   "icons": [
     {
       "src": "favicon.ico",
